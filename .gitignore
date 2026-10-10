@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+*.vuemodern.json
+VUE-3.3.0/
+.venv/
