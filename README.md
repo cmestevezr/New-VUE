@@ -9,6 +9,9 @@ A modern, local concept-map editor built with Python and Qt. It is a clean imple
 - Create curved connections with **Connect** (`L`).
 - Label a selected connection with **Label link** (`E`) or double-click its line to write the label.
 - Drag a concept into another to make it visual content of the receiving concept; the container expands as children are added. **Indent** (`Tab`) and `Shift+Tab` also indent and outdent the selection.
+- Attach PNG or GIF images to concepts; VUE Modern shows a thumbnail and expands the concept as needed.
+- Add a URL to a concept and click its underlined address to open it in your default browser.
+- Add up to 256 characters of underlined text and edit it from **Edit text**, the inspector, or right-clicking the displayed text.
 - Edit concept titles, notes and colours in the inspector.
 - Save readable `.vuemodern.json` maps, reopen them and export PNG or nested XML with explicit parent-child relationships.
 - Import the concepts, notes, positions, colours and links from classic VUE `.vue` maps.

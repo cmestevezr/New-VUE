@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QUrl, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -21,6 +21,8 @@ from PySide6.QtGui import (
     QPainterPath,
     QPainterPathStroker,
     QPen,
+    QDesktopServices,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -62,6 +64,9 @@ class NodeData:
     colour: str = DEFAULT_NODE_COLOUR
     notes: str = ""
     parent_id: str | None = None
+    image_path: str = ""
+    url: str = ""
+    text: str = ""
 
 
 @dataclass
@@ -140,6 +145,9 @@ class MapNode(QGraphicsObject):
     HEADER_HEIGHT = 42.0
     CONTENT_PADDING = 18.0
     CONTENT_GAP = 12.0
+    THUMBNAIL_MAX_WIDTH = 150
+    THUMBNAIL_MAX_HEIGHT = 96
+    TEXT_HEIGHT = 48.0
 
     def __init__(self, data: NodeData) -> None:
         super().__init__()
@@ -149,6 +157,8 @@ class MapNode(QGraphicsObject):
         self._width = self.WIDTH
         self._height = self.HEIGHT
         self._contains_children = False
+        self._thumbnail_path = ""
+        self._thumbnail = QPixmap()
         self.setPos(data.x, data.y)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -179,6 +189,62 @@ class MapNode(QGraphicsObject):
         self._contains_children = contains_children
         self.update()
 
+    def thumbnail(self) -> QPixmap:
+        """Return a small, static preview for either a PNG or the first GIF frame."""
+        if self.data.image_path != self._thumbnail_path:
+            self._thumbnail_path = self.data.image_path
+            image = QPixmap(self.data.image_path) if self.data.image_path else QPixmap()
+            self._thumbnail = image.scaled(
+                self.THUMBNAIL_MAX_WIDTH,
+                self.THUMBNAIL_MAX_HEIGHT,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ) if not image.isNull() else QPixmap()
+        return self._thumbnail
+
+    def detail_height(self) -> float:
+        parts: list[float] = []
+        preview = self.thumbnail()
+        if not preview.isNull():
+            parts.append(float(preview.height()))
+        elif self.data.image_path:
+            parts.append(22.0)
+        if self.data.url.strip():
+            parts.append(20.0)
+        if self.data.text.strip():
+            parts.append(self.TEXT_HEIGHT)
+        return sum(parts) + self.CONTENT_GAP * max(0, len(parts) - 1)
+
+    def intrinsic_width(self) -> float:
+        preview = self.thumbnail()
+        image_width = float(preview.width()) if not preview.isNull() else (150.0 if self.data.image_path else 0.0)
+        return max(self.WIDTH, image_width + self.CONTENT_PADDING * 2)
+
+    def has_details(self) -> bool:
+        return bool(self.data.image_path or self.data.url.strip() or self.data.text.strip())
+
+    def detail_layout(self) -> tuple[QRectF | None, QRectF | None, QRectF | None]:
+        """Return local rectangles for the image, URL and short text."""
+        if not (self._contains_children or self.has_details()):
+            return None, None, None
+        y = self.HEADER_HEIGHT + self.CONTENT_PADDING
+        image_rect: QRectF | None = None
+        url_rect: QRectF | None = None
+        text_rect: QRectF | None = None
+        preview = self.thumbnail()
+        if not preview.isNull():
+            image_rect = QRectF((self._width - preview.width()) / 2, y, preview.width(), preview.height())
+            y += preview.height() + self.CONTENT_GAP
+        elif self.data.image_path:
+            image_rect = QRectF(self.CONTENT_PADDING, y, self._width - self.CONTENT_PADDING * 2, 22)
+            y += 22 + self.CONTENT_GAP
+        if self.data.url.strip():
+            url_rect = QRectF(self.CONTENT_PADDING, y, self._width - self.CONTENT_PADDING * 2, 20)
+            y += 20 + self.CONTENT_GAP
+        if self.data.text.strip():
+            text_rect = QRectF(self.CONTENT_PADDING, y, self._width - self.CONTENT_PADDING * 2, self.TEXT_HEIGHT)
+        return image_rect, url_rect, text_rect
+
     def paint(self, painter: QPainter, option, widget=None) -> None:  # type: ignore[override]
         rect = self.boundingRect()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -192,13 +258,34 @@ class MapNode(QGraphicsObject):
         font = QFont("Segoe UI", 10)
         font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(font)
-        if self._contains_children:
+        if self._contains_children or self.has_details():
             title_rect = QRectF(rect.left() + 14, rect.top() + 6, rect.width() - 28, self.HEADER_HEIGHT - 10)
             painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.data.label)
             painter.setPen(QPen(QColor("#CBD5E1"), 1.0))
             painter.drawLine(rect.left() + 12, self.HEADER_HEIGHT, rect.right() - 12, self.HEADER_HEIGHT)
         else:
             painter.drawText(rect.adjusted(14, 12, -14, -12), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.data.label)
+
+        image_rect, url_rect, text_rect = self.detail_layout()
+        if image_rect:
+            preview = self.thumbnail()
+            if preview.isNull():
+                painter.setPen(QColor("#B45309"))
+                painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, "Imagen no disponible")
+            else:
+                painter.drawPixmap(image_rect.toRect(), preview)
+        if url_rect:
+            url_font = QFont("Segoe UI", 8)
+            url_font.setUnderline(True)
+            painter.setFont(url_font)
+            painter.setPen(QColor("#1D4ED8"))
+            painter.drawText(url_rect, Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine, self.data.url)
+        if text_rect:
+            text_font = QFont("Segoe UI", 8)
+            text_font.setUnderline(True)
+            painter.setFont(text_font)
+            painter.setPen(QColor("#334155"))
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, self.data.text)
 
     def itemChange(self, change, value):  # type: ignore[override]
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -225,7 +312,13 @@ class MapNode(QGraphicsObject):
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         super().mouseReleaseEvent(event)
         origin, self._drag_origin = self._drag_origin, None
-        if origin is None or (self.pos() - origin).manhattanLength() < 8:
+        if origin is None:
+            return
+        if (self.pos() - origin).manhattanLength() < 8:
+            _, url_rect, _ = self.detail_layout()
+            if event.button() == Qt.MouseButton.LeftButton and url_rect and url_rect.contains(event.pos()) and self.data.url.strip():
+                QDesktopServices.openUrl(QUrl.fromUserInput(self.data.url.strip()))
+                event.accept()
             return
         scene = self.scene()
         if not isinstance(scene, MapScene):
@@ -243,6 +336,26 @@ class MapNode(QGraphicsObject):
             self.setSelected(True)
         elif scene.move_descendants(self, self.pos() - origin):
             self.setSelected(True)
+
+    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        _, _, text_rect = self.detail_layout()
+        if text_rect and text_rect.contains(event.pos()):
+            text, accepted = QInputDialog.getText(
+                None,
+                "Editar texto del concepto",
+                "Texto breve (máx. 256 caracteres):",
+                text=self.data.text,
+            )
+            if accepted:
+                self.data.text = text.strip()[:256]
+                scene = self.scene()
+                if isinstance(scene, MapScene):
+                    scene.reflow_hierarchy()
+                    scene.changed.emit()
+                self.update()
+            event.accept()
+            return
+        super().contextMenuEvent(event)
 
 
 class MapScene(QGraphicsScene):
@@ -318,14 +431,20 @@ class MapScene(QGraphicsScene):
         def measure(node: MapNode) -> tuple[float, float]:
             children = children_by_parent.get(node.data.id, [])
             child_sizes = [measure(child) for child in children]
+            detail_height = node.detail_height()
             if not children:
-                node.set_container_size(MapNode.WIDTH, MapNode.HEIGHT, False)
+                node.set_container_size(
+                    node.intrinsic_width(),
+                    max(MapNode.HEIGHT, MapNode.HEADER_HEIGHT + detail_height + MapNode.CONTENT_PADDING * 2),
+                    False,
+                )
                 return node.node_width, node.node_height
             content_width = max(width for width, _ in child_sizes)
             content_height = sum(height for _, height in child_sizes) + MapNode.CONTENT_GAP * (len(children) - 1)
             node.set_container_size(
-                content_width + MapNode.CONTENT_PADDING * 2,
-                MapNode.HEADER_HEIGHT + content_height + MapNode.CONTENT_PADDING * 2,
+                max(node.intrinsic_width(), content_width + MapNode.CONTENT_PADDING * 2),
+                MapNode.HEADER_HEIGHT + detail_height + content_height + MapNode.CONTENT_PADDING * 2
+                + (MapNode.CONTENT_GAP if detail_height else 0),
                 True,
             )
             return node.node_width, node.node_height
@@ -338,7 +457,9 @@ class MapScene(QGraphicsScene):
         def place_children(parent: MapNode, depth: int) -> None:
             parent.setZValue(depth)
             children = children_by_parent.get(parent.data.id, [])
-            current_y = parent.pos().y() + MapNode.HEADER_HEIGHT + MapNode.CONTENT_PADDING
+            current_y = parent.pos().y() + MapNode.HEADER_HEIGHT + MapNode.CONTENT_PADDING + parent.detail_height()
+            if children and parent.detail_height():
+                current_y += MapNode.CONTENT_GAP
             for child in children:
                 child.setPos(parent.pos().x() + (parent.node_width - child.node_width) / 2, current_y)
                 current_y += child.node_height + MapNode.CONTENT_GAP
@@ -401,6 +522,9 @@ class MapScene(QGraphicsScene):
                     "colour": node.data.colour,
                     "notes": node.data.notes,
                     "parent_id": node.data.parent_id,
+                    "image_path": node.data.image_path,
+                    "url": node.data.url,
+                    "text": node.data.text,
                 }
                 for node in nodes
             ],
@@ -424,6 +548,9 @@ class MapScene(QGraphicsScene):
                 str(raw.get("colour", DEFAULT_NODE_COLOUR)),
                 str(raw.get("notes", "")),
                 raw.get("parent_id"),
+                str(raw.get("image_path", "")),
+                str(raw.get("url", "")),
+                str(raw.get("text", ""))[:256],
             )
             node = MapNode(data)
             node.changed.connect(self.changed)
@@ -461,6 +588,12 @@ class MapScene(QGraphicsScene):
                 attributes["parent_id"] = str(node["parent_id"])
             element = ET.SubElement(parent_element, "node", attributes)
             ET.SubElement(element, "notes").text = node["notes"]
+            if node.get("image_path"):
+                ET.SubElement(element, "image", {"path": str(node["image_path"])})
+            if node.get("url"):
+                ET.SubElement(element, "url").text = str(node["url"])
+            if node.get("text"):
+                ET.SubElement(element, "text").text = str(node["text"])
             descendants = children_by_parent.get(node["id"], [])
             if descendants:
                 children_element = ET.SubElement(element, "children")
@@ -599,22 +732,48 @@ class Inspector(QWidget):
         self.notes_edit = QPlainTextEdit()
         self.notes_edit.setPlaceholderText("Notas privadas del concepto…")
         self.notes_edit.setFixedHeight(130)
+        self.image_path_edit = QLineEdit()
+        self.image_path_edit.setReadOnly(True)
+        self.image_path_edit.setPlaceholderText("Sin imagen adjunta")
+        self.attach_image_button = QPushButton("Adjuntar…")
+        self.remove_image_button = QPushButton("Quitar")
+        image_row = QWidget()
+        image_layout = QHBoxLayout(image_row)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        image_layout.addWidget(self.image_path_edit, 1)
+        image_layout.addWidget(self.attach_image_button)
+        image_layout.addWidget(self.remove_image_button)
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText("https://…")
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText("Texto breve, máximo 256 caracteres…")
+        self.text_edit.setFixedHeight(70)
         self.colour_button = QPushButton("Color")
         self.apply_button = QPushButton("Aplicar cambios")
         self.apply_button.setObjectName("primaryButton")
         form.addRow("Título", self.title_edit)
         form.addRow("Notas", self.notes_edit)
+        form.addRow("Imagen", image_row)
+        form.addRow("URL", self.url_edit)
+        form.addRow("Texto", self.text_edit)
         form.addRow("Estilo", self.colour_button)
         layout.addLayout(form)
         layout.addWidget(self.apply_button)
         layout.addStretch(1)
         self.apply_button.clicked.connect(self.apply)
         self.colour_button.clicked.connect(self.choose_colour)
+        self.attach_image_button.clicked.connect(self.attach_image)
+        self.remove_image_button.clicked.connect(self.remove_image)
         self.set_enabled(False)
 
     def set_enabled(self, enabled: bool) -> None:
         self.title_edit.setEnabled(enabled)
         self.notes_edit.setEnabled(enabled)
+        self.image_path_edit.setEnabled(enabled)
+        self.attach_image_button.setEnabled(enabled)
+        self.remove_image_button.setEnabled(enabled)
+        self.url_edit.setEnabled(enabled)
+        self.text_edit.setEnabled(enabled)
         self.colour_button.setEnabled(enabled)
         self.apply_button.setEnabled(enabled)
 
@@ -625,10 +784,16 @@ class Inspector(QWidget):
             self.hint.setText("Selecciona un concepto para editarlo.")
             self.title_edit.clear()
             self.notes_edit.clear()
+            self.image_path_edit.clear()
+            self.url_edit.clear()
+            self.text_edit.clear()
             return
         self.hint.setText("Los cambios se guardan con el mapa.")
         self.title_edit.setText(node.data.label)
         self.notes_edit.setPlainText(node.data.notes)
+        self.image_path_edit.setText(node.data.image_path)
+        self.url_edit.setText(node.data.url)
+        self.text_edit.setPlainText(node.data.text)
         self.colour_button.setStyleSheet(f"background: {node.data.colour};")
 
     def apply(self) -> None:
@@ -638,6 +803,40 @@ class Inspector(QWidget):
         if label:
             self.node.data.label = label
         self.node.data.notes = self.notes_edit.toPlainText().strip()
+        self.node.data.url = self.url_edit.text().strip()
+        self.node.data.text = self.text_edit.toPlainText().strip()[:256]
+        self.node.update()
+        scene = self.node.scene()
+        if isinstance(scene, MapScene):
+            scene.reflow_hierarchy()
+        self.node.changed.emit()
+        self.changed.emit()
+
+    def attach_image(self) -> None:
+        if not self.node:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Adjuntar imagen", "", "Imágenes (*.png *.gif)")
+        if not path:
+            return
+        self.node.data.image_path = path
+        self.image_path_edit.setText(path)
+        self.node._thumbnail_path = ""
+        scene = self.node.scene()
+        if isinstance(scene, MapScene):
+            scene.reflow_hierarchy()
+        self.node.update()
+        self.node.changed.emit()
+        self.changed.emit()
+
+    def remove_image(self) -> None:
+        if not self.node or not self.node.data.image_path:
+            return
+        self.node.data.image_path = ""
+        self.node._thumbnail_path = ""
+        self.image_path_edit.clear()
+        scene = self.node.scene()
+        if isinstance(scene, MapScene):
+            scene.reflow_hierarchy()
         self.node.update()
         self.node.changed.emit()
         self.changed.emit()
@@ -704,6 +903,7 @@ class MainWindow(QMainWindow):
         self.indent_action = QAction("Indentar…", self, shortcut="Tab", triggered=self.indent_selected_node)
         self.outdent_action = QAction("Desindentar", self, shortcut="Shift+Tab", triggered=self.outdent_selected_node)
         self.label_link_action = QAction("Etiquetar enlace…", self, shortcut="E", triggered=self.label_selected_link)
+        self.edit_text_action = QAction("Editar texto del concepto…", self, triggered=self.edit_selected_node_text)
         self.layout_action = QAction("Ordenar", self, triggered=self.auto_layout)
         self.zoom_fit_action = QAction("Ajustar vista", self, shortcut="F", triggered=self.zoom_fit)
 
@@ -722,7 +922,17 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addActions([self.export_action, self.export_xml_action])
         edit_menu = menu.addMenu("Editar")
-        edit_menu.addActions([self.add_node_action, self.indent_action, self.outdent_action, self.label_link_action, self.delete_action, self.layout_action])
+        edit_menu.addActions(
+            [
+                self.add_node_action,
+                self.indent_action,
+                self.outdent_action,
+                self.label_link_action,
+                self.edit_text_action,
+                self.delete_action,
+                self.layout_action,
+            ]
+        )
         tools_menu = menu.addMenu("Herramientas")
         tools_menu.addActions([self.select_action, self.pan_action, self.connect_action])
         view_menu = menu.addMenu("Vista")
@@ -736,7 +946,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addActions([self.select_action, self.pan_action, self.connect_action])
         toolbar.addSeparator()
-        toolbar.addActions([self.add_node_action, self.indent_action, self.outdent_action, self.label_link_action, self.delete_action])
+        toolbar.addActions([self.add_node_action, self.indent_action, self.outdent_action, self.label_link_action, self.edit_text_action, self.delete_action])
         toolbar.addSeparator()
         toolbar.addActions([self.layout_action, self.zoom_fit_action, self.export_action, self.export_xml_action])
         self.addToolBar(toolbar)
@@ -847,6 +1057,25 @@ class MainWindow(QMainWindow):
             link.label = label.strip()
             link.update()
             self.mark_dirty()
+
+    def edit_selected_node_text(self) -> None:
+        node = self.selected_node()
+        if not node:
+            QMessageBox.information(self, "Editar texto", "Selecciona un concepto para editar su texto.")
+            return
+        text, accepted = QInputDialog.getText(
+            self,
+            "Editar texto del concepto",
+            "Texto breve (máx. 256 caracteres):",
+            text=node.data.text,
+        )
+        if not accepted:
+            return
+        node.data.text = text.strip()[:256]
+        self.scene.reflow_hierarchy()
+        node.update()
+        self.inspector.inspect(node)
+        self.mark_dirty()
 
     def delete_selection(self) -> None:
         selected = list(self.scene.selectedItems())
