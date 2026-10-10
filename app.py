@@ -50,6 +50,7 @@ class NodeData:
     y: float
     colour: str = DEFAULT_NODE_COLOUR
     notes: str = ""
+    parent_id: str | None = None
 
 
 @dataclass
@@ -91,6 +92,25 @@ class MapLink(QGraphicsPathItem):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self.path())
+        if self.label.strip():
+            center = self.path().pointAtPercent(0.5)
+            font = QFont("Segoe UI", 9)
+            font.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(font)
+            text_rect = QRectF(painter.fontMetrics().boundingRect(self.label)).adjusted(-8, -4, 8, 4)
+            text_rect.moveCenter(center)
+            painter.fillRect(text_rect, QColor("#F8FAFC"))
+            painter.setPen(QColor("#334155"))
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, self.label)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
+        label, accepted = QInputDialog.getText(None, "Etiquetar enlace", "Etiqueta del enlace:", text=self.label)
+        if accepted:
+            self.label = label.strip()
+            self.update()
+            if isinstance(self.scene(), MapScene):
+                self.scene().changed.emit()
+        super().mouseDoubleClickEvent(event)
 
 
 class MapNode(QGraphicsObject):
@@ -204,6 +224,7 @@ class MapScene(QGraphicsScene):
                     "y": node.pos().y(),
                     "colour": node.data.colour,
                     "notes": node.data.notes,
+                    "parent_id": node.data.parent_id,
                 }
                 for node in nodes
             ],
@@ -226,6 +247,7 @@ class MapScene(QGraphicsScene):
                 float(raw.get("y", 0)),
                 str(raw.get("colour", DEFAULT_NODE_COLOUR)),
                 str(raw.get("notes", "")),
+                raw.get("parent_id"),
             )
             node = MapNode(data)
             node.changed.connect(self.changed)
@@ -238,6 +260,33 @@ class MapScene(QGraphicsScene):
                 if link:
                     link.id = str(raw.get("id", link.id))
         self.changed.emit()
+
+    def export_xml(self, path: Path) -> None:
+        """Write an interoperable, indented XML representation of the map."""
+        document = self.to_document()
+        root = ET.Element("vue-modern", {"version": "1"})
+        nodes_element = ET.SubElement(root, "nodes")
+        for node in document["nodes"]:
+            attributes = {
+                "id": node["id"],
+                "label": node["label"],
+                "x": str(node["x"]),
+                "y": str(node["y"]),
+                "colour": node["colour"],
+            }
+            if node.get("parent_id"):
+                attributes["parent_id"] = str(node["parent_id"])
+            element = ET.SubElement(nodes_element, "node", attributes)
+            ET.SubElement(element, "notes").text = node["notes"]
+        links_element = ET.SubElement(root, "links")
+        for link in document["links"]:
+            ET.SubElement(
+                links_element,
+                "link",
+                {"id": link["id"], "source": link["source"], "target": link["target"], "label": link["label"]},
+            )
+        ET.indent(root, space="  ")
+        ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
     def load_legacy_vue(self, path: Path) -> tuple[int, int]:
         """Import the core node/link structure of a classic VUE ``.vue`` map.
@@ -454,11 +503,15 @@ class MainWindow(QMainWindow):
         self.save_action = QAction("Guardar", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.save_map)
         self.save_as_action = QAction("Guardar como…", self, shortcut=QKeySequence.StandardKey.SaveAs, triggered=lambda: self.save_map(save_as=True))
         self.export_action = QAction("Exportar PNG", self, triggered=self.export_png)
+        self.export_xml_action = QAction("Exportar XML", self, triggered=self.export_xml)
         self.add_node_action = QAction("Nuevo concepto", self, shortcut="N", triggered=self.add_node)
         self.select_action = QAction("Puntero", self, checkable=True, shortcut="V")
         self.pan_action = QAction("Mano", self, checkable=True, shortcut="H")
         self.connect_action = QAction("Conectar", self, checkable=True, shortcut="L")
         self.delete_action = QAction("Eliminar", self, shortcut=QKeySequence.StandardKey.Delete, triggered=self.delete_selection)
+        self.indent_action = QAction("Indentar…", self, shortcut="Tab", triggered=self.indent_selected_node)
+        self.outdent_action = QAction("Desindentar", self, shortcut="Shift+Tab", triggered=self.outdent_selected_node)
+        self.label_link_action = QAction("Etiquetar enlace…", self, shortcut="E", triggered=self.label_selected_link)
         self.layout_action = QAction("Ordenar", self, triggered=self.auto_layout)
         self.zoom_fit_action = QAction("Ajustar vista", self, shortcut="F", triggered=self.zoom_fit)
 
@@ -475,9 +528,9 @@ class MainWindow(QMainWindow):
         file_menu = menu.addMenu("Archivo")
         file_menu.addActions([self.new_action, self.open_action, self.save_action, self.save_as_action])
         file_menu.addSeparator()
-        file_menu.addAction(self.export_action)
+        file_menu.addActions([self.export_action, self.export_xml_action])
         edit_menu = menu.addMenu("Editar")
-        edit_menu.addActions([self.add_node_action, self.delete_action, self.layout_action])
+        edit_menu.addActions([self.add_node_action, self.indent_action, self.outdent_action, self.label_link_action, self.delete_action, self.layout_action])
         tools_menu = menu.addMenu("Herramientas")
         tools_menu.addActions([self.select_action, self.pan_action, self.connect_action])
         view_menu = menu.addMenu("Vista")
@@ -491,9 +544,9 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addActions([self.select_action, self.pan_action, self.connect_action])
         toolbar.addSeparator()
-        toolbar.addActions([self.add_node_action, self.delete_action])
+        toolbar.addActions([self.add_node_action, self.indent_action, self.outdent_action, self.label_link_action, self.delete_action])
         toolbar.addSeparator()
-        toolbar.addActions([self.layout_action, self.zoom_fit_action, self.export_action])
+        toolbar.addActions([self.layout_action, self.zoom_fit_action, self.export_action, self.export_xml_action])
         self.addToolBar(toolbar)
 
     def new_map(self, checked=False, seed: bool = False) -> None:
@@ -562,6 +615,59 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Conexión creada.", 2500)
         else:
             self.statusBar().showMessage("Esos conceptos ya están conectados.", 2500)
+
+    def selected_node(self) -> MapNode | None:
+        return next((item for item in self.scene.selectedItems() if isinstance(item, MapNode)), None)
+
+    def indent_selected_node(self) -> None:
+        node = self.selected_node()
+        if not node:
+            QMessageBox.information(self, "Indentar", "Selecciona un concepto para indentar.")
+            return
+        candidates = [item for item in self.scene.items() if isinstance(item, MapNode) and item is not node]
+        if not candidates:
+            return
+        choices = {f"{candidate.data.label}  ·  {candidate.data.id[:6]}": candidate for candidate in candidates}
+        choice, accepted = QInputDialog.getItem(self, "Indentar concepto", "Concepto padre:", list(choices), 0, False)
+        if not accepted:
+            return
+        parent = choices[choice]
+        lookup = {candidate.data.id: candidate for candidate in candidates + [node]}
+        ancestor = parent
+        while ancestor.data.parent_id:
+            if ancestor.data.parent_id == node.data.id:
+                QMessageBox.warning(self, "Indentar", "No puedes crear una jerarquía circular.")
+                return
+            ancestor = lookup.get(ancestor.data.parent_id)
+            if ancestor is None:
+                break
+        node.data.parent_id = parent.data.id
+        siblings = [item for item in self.scene.items() if isinstance(item, MapNode) and item.data.parent_id == parent.data.id and item is not node]
+        node.setPos(parent.pos() + QPointF(250, max(0, len(siblings)) * 115))
+        if not any(link.source is parent and link.target is node for link in parent.links):
+            self.scene.add_link(parent, node)
+        self.mark_dirty()
+        self.statusBar().showMessage(f"{node.data.label} quedó indentado bajo {parent.data.label}.", 3500)
+
+    def outdent_selected_node(self) -> None:
+        node = self.selected_node()
+        if not node or not node.data.parent_id:
+            return
+        node.data.parent_id = None
+        node.moveBy(-250, 0)
+        self.mark_dirty()
+        self.statusBar().showMessage("Concepto desindentado.", 2500)
+
+    def label_selected_link(self) -> None:
+        link = next((item for item in self.scene.selectedItems() if isinstance(item, MapLink)), None)
+        if not link:
+            QMessageBox.information(self, "Etiquetar enlace", "Selecciona un enlace o haz doble clic sobre él.")
+            return
+        label, accepted = QInputDialog.getText(self, "Etiquetar enlace", "Etiqueta del enlace:", text=link.label)
+        if accepted:
+            link.label = label.strip()
+            link.update()
+            self.mark_dirty()
 
     def delete_selection(self) -> None:
         selected = list(self.scene.selectedItems())
@@ -668,6 +774,24 @@ class MainWindow(QMainWindow):
         painter.end()
         if image.save(file_name):
             self.statusBar().showMessage("PNG exportado.", 3000)
+
+    def export_xml(self) -> None:
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar XML",
+            str(Path.home() / "Documents" / "mi-mapa.xml"),
+            "XML (*.xml)",
+        )
+        if not file_name:
+            return
+        export_path = Path(file_name)
+        if export_path.suffix.lower() != ".xml":
+            export_path = export_path.with_suffix(".xml")
+        try:
+            self.scene.export_xml(export_path)
+            self.statusBar().showMessage(f"XML exportado: {export_path.name}", 3500)
+        except OSError as error:
+            QMessageBox.critical(self, "No se pudo exportar XML", str(error))
 
     def zoom_fit(self) -> None:
         bounds = self.scene.itemsBoundingRect()
