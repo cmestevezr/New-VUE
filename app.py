@@ -137,12 +137,18 @@ class MapNode(QGraphicsObject):
     changed = Signal()
     WIDTH = 190.0
     HEIGHT = 86.0
+    HEADER_HEIGHT = 42.0
+    CONTENT_PADDING = 18.0
+    CONTENT_GAP = 12.0
 
     def __init__(self, data: NodeData) -> None:
         super().__init__()
         self.data = data
         self.links: list[MapLink] = []
         self._drag_origin: QPointF | None = None
+        self._width = self.WIDTH
+        self._height = self.HEIGHT
+        self._contains_children = False
         self.setPos(data.x, data.y)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -153,7 +159,25 @@ class MapNode(QGraphicsObject):
         self.setToolTip("Doble clic para editar")
 
     def boundingRect(self) -> QRectF:  # type: ignore[override]
-        return QRectF(0, 0, self.WIDTH, self.HEIGHT)
+        return QRectF(0, 0, self._width, self._height)
+
+    @property
+    def node_width(self) -> float:
+        return self._width
+
+    @property
+    def node_height(self) -> float:
+        return self._height
+
+    def set_container_size(self, width: float, height: float, contains_children: bool) -> None:
+        width, height = max(self.WIDTH, width), max(self.HEIGHT, height)
+        if (self._width, self._height, self._contains_children) == (width, height, contains_children):
+            return
+        self.prepareGeometryChange()
+        self._width = width
+        self._height = height
+        self._contains_children = contains_children
+        self.update()
 
     def paint(self, painter: QPainter, option, widget=None) -> None:  # type: ignore[override]
         rect = self.boundingRect()
@@ -168,7 +192,13 @@ class MapNode(QGraphicsObject):
         font = QFont("Segoe UI", 10)
         font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(font)
-        painter.drawText(rect.adjusted(14, 12, -14, -12), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.data.label)
+        if self._contains_children:
+            title_rect = QRectF(rect.left() + 14, rect.top() + 6, rect.width() - 28, self.HEADER_HEIGHT - 10)
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.data.label)
+            painter.setPen(QPen(QColor("#CBD5E1"), 1.0))
+            painter.drawLine(rect.left() + 12, self.HEADER_HEIGHT, rect.right() - 12, self.HEADER_HEIGHT)
+        else:
+            painter.drawText(rect.adjusted(14, 12, -14, -12), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.data.label)
 
     def itemChange(self, change, value):  # type: ignore[override]
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -211,6 +241,8 @@ class MapNode(QGraphicsObject):
         )
         if parent and scene.indent_node(self, parent):
             self.setSelected(True)
+        elif scene.move_descendants(self, self.pos() - origin):
+            self.setSelected(True)
 
 
 class MapScene(QGraphicsScene):
@@ -238,20 +270,95 @@ class MapScene(QGraphicsScene):
         return link
 
     def indent_node(self, node: MapNode, parent: MapNode) -> bool:
-        """Make ``node`` a child of ``parent`` and ensure its hierarchy link exists."""
+        """Place ``node`` inside ``parent`` and preserve the hierarchy in the model."""
         if node is parent or self._would_create_cycle(node, parent):
             return False
-        siblings = [
-            item
-            for item in self.items()
-            if isinstance(item, MapNode) and item is not node and item.data.parent_id == parent.data.id
-        ]
         node.data.parent_id = parent.data.id
-        node.setPos(parent.pos() + QPointF(250, len(siblings) * 115))
         if not any(link.source is parent and link.target is node for link in parent.links):
             self.add_link(parent, node)
+        self.reflow_hierarchy()
         self.changed.emit()
         return True
+
+    def outdent_node(self, node: MapNode) -> bool:
+        """Remove a node from its visual container while retaining its map position."""
+        if not node.data.parent_id:
+            return False
+        parent = next(
+            (item for item in self.items() if isinstance(item, MapNode) and item.data.id == node.data.parent_id),
+            None,
+        )
+        node.data.parent_id = None
+        if parent:
+            node.setPos(parent.pos() + QPointF(parent.node_width + 60, MapNode.HEADER_HEIGHT))
+        self.reflow_hierarchy()
+        self.changed.emit()
+        return True
+
+    def move_descendants(self, node: MapNode, delta: QPointF) -> bool:
+        """Keep visible contents together when a container itself is moved."""
+        if delta.manhattanLength() < 1:
+            return False
+        if not self._children_by_parent().get(node.data.id, []):
+            return False
+
+        def move_branch(parent: MapNode) -> None:
+            for child in self._children_by_parent().get(parent.data.id, []):
+                child.moveBy(delta.x(), delta.y())
+                move_branch(child)
+
+        move_branch(node)
+        self.changed.emit()
+        return True
+
+    def reflow_hierarchy(self) -> None:
+        """Size containers from their contents and lay every child out inside its parent."""
+        children_by_parent = self._children_by_parent()
+
+        def measure(node: MapNode) -> tuple[float, float]:
+            children = children_by_parent.get(node.data.id, [])
+            child_sizes = [measure(child) for child in children]
+            if not children:
+                node.set_container_size(MapNode.WIDTH, MapNode.HEIGHT, False)
+                return node.node_width, node.node_height
+            content_width = max(width for width, _ in child_sizes)
+            content_height = sum(height for _, height in child_sizes) + MapNode.CONTENT_GAP * (len(children) - 1)
+            node.set_container_size(
+                content_width + MapNode.CONTENT_PADDING * 2,
+                MapNode.HEADER_HEIGHT + content_height + MapNode.CONTENT_PADDING * 2,
+                True,
+            )
+            return node.node_width, node.node_height
+
+        all_nodes = [item for item in self.items() if isinstance(item, MapNode)]
+        roots = [node for node in all_nodes if not node.data.parent_id or node.data.parent_id not in children_by_parent]
+        for root in roots:
+            measure(root)
+
+        def place_children(parent: MapNode, depth: int) -> None:
+            parent.setZValue(depth)
+            children = children_by_parent.get(parent.data.id, [])
+            current_y = parent.pos().y() + MapNode.HEADER_HEIGHT + MapNode.CONTENT_PADDING
+            for child in children:
+                child.setPos(parent.pos().x() + (parent.node_width - child.node_width) / 2, current_y)
+                current_y += child.node_height + MapNode.CONTENT_GAP
+                place_children(child, depth + 1)
+
+        for root in roots:
+            place_children(root, 0)
+        for link in (item for item in self.items() if isinstance(item, MapLink)):
+            link.refresh_path()
+
+    def _children_by_parent(self) -> dict[str, list[MapNode]]:
+        nodes = [item for item in self.items() if isinstance(item, MapNode)]
+        ids = {node.data.id for node in nodes}
+        children: dict[str, list[MapNode]] = {}
+        for node in nodes:
+            if node.data.parent_id in ids:
+                children.setdefault(node.data.parent_id, []).append(node)
+        for siblings in children.values():
+            siblings.sort(key=lambda item: (item.pos().y(), item.pos().x(), item.data.id))
+        return children
 
     def _would_create_cycle(self, node: MapNode, parent: MapNode) -> bool:
         lookup = {item.data.id: item for item in self.items() if isinstance(item, MapNode)}
@@ -328,6 +435,7 @@ class MapScene(QGraphicsScene):
                 link = self.add_link(source, target, str(raw.get("label", "")))
                 if link:
                     link.id = str(raw.get("id", link.id))
+        self.reflow_hierarchy()
         self.changed.emit()
 
     def export_xml(self, path: Path) -> None:
@@ -335,7 +443,13 @@ class MapScene(QGraphicsScene):
         document = self.to_document()
         root = ET.Element("vue-modern", {"version": "1"})
         nodes_element = ET.SubElement(root, "nodes")
+        nodes_by_id = {node["id"]: node for node in document["nodes"]}
+        children_by_parent: dict[str, list[dict]] = {}
         for node in document["nodes"]:
+            if node.get("parent_id") in nodes_by_id:
+                children_by_parent.setdefault(str(node["parent_id"]), []).append(node)
+
+        def write_node(node: dict, parent_element: ET.Element) -> None:
             attributes = {
                 "id": node["id"],
                 "label": node["label"],
@@ -345,8 +459,17 @@ class MapScene(QGraphicsScene):
             }
             if node.get("parent_id"):
                 attributes["parent_id"] = str(node["parent_id"])
-            element = ET.SubElement(nodes_element, "node", attributes)
+            element = ET.SubElement(parent_element, "node", attributes)
             ET.SubElement(element, "notes").text = node["notes"]
+            descendants = children_by_parent.get(node["id"], [])
+            if descendants:
+                children_element = ET.SubElement(element, "children")
+                for child in descendants:
+                    write_node(child, children_element)
+
+        for node in document["nodes"]:
+            if node.get("parent_id") not in nodes_by_id:
+                write_node(node, nodes_element)
         links_element = ET.SubElement(root, "links")
         for link in document["links"]:
             ET.SubElement(
@@ -709,10 +832,8 @@ class MainWindow(QMainWindow):
 
     def outdent_selected_node(self) -> None:
         node = self.selected_node()
-        if not node or not node.data.parent_id:
+        if not node or not self.scene.outdent_node(node):
             return
-        node.data.parent_id = None
-        node.moveBy(-250, 0)
         self.mark_dirty()
         self.statusBar().showMessage("Concepto desindentado.", 2500)
 
