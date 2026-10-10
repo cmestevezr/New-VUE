@@ -20,7 +20,24 @@ The **Studio Paper** interface includes a bundled warm paper canvas, translucent
 - Import the concepts, notes, positions, colours and links from classic VUE `.vue` maps.
 - Automatically arrange small maps.
 
-## Run locally
+## Install on Windows
+
+The release package is self-contained and installs only for the current Windows user. It does not require administrator permissions or a system-wide Python installation.
+
+1. Extract `VUE-Modern-<version>-windows.zip`.
+2. Run `Install-VUE-Modern.cmd`.
+3. Open **VUE Modern** from the Start menu.
+
+To build the ZIP package locally, install the build dependency once and run:
+
+```powershell
+%USERPROFILE%\VUE-Modern\runtime\Scripts\python.exe -m pip install pyinstaller
+.\build-installer.ps1 -Version 0.1.0
+```
+
+The ZIP is written to `installer-output/`. Run `Uninstall-VUE-Modern.ps1` from the extracted package to remove the per-user installation.
+
+## Run from source
 
 Python 3.11+ is required. In PowerShell:
 
@@ -30,7 +47,7 @@ python -m venv .venv
 .\start.ps1
 ```
 
-The project never needs a system-wide Python installation or a Windows installer.
+The project never needs a system-wide Python installation.
 
 ## Classic VUE compatibility
 

@@ -3,3 +3,6 @@ __pycache__/
 *.vuemodern.json
 VUE-3.3.0/
 .venv/
+installer-output/
+build/
+*.spec
