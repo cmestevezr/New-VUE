@@ -9,12 +9,14 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, QUrl, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
+    QBrush,
     QColor,
     QFont,
+    QFontDatabase,
     QImage,
     QKeySequence,
     QPainter,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsPathItem,
+    QGraphicsDropShadowEffect,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -44,6 +47,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QStyle,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -52,7 +56,10 @@ from PySide6.QtWidgets import (
 
 APP_NAME = "VUE Modern"
 DEFAULT_NODE_COLOUR = "#E8F0FE"
-PALETTE = ("#E8F0FE", "#DCFCE7", "#FEF3C7", "#FCE7F3", "#EDE9FE", "#F3F4F6")
+PALETTE = ("#DCE8F8", "#E1EFE2", "#F9E2D7", "#E8E1F5", "#F5E9C8", "#E7ECEF")
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+PAPER_TEXTURE = ASSETS_DIR / "studio-paper-canvas.png"
+APP_FONT = "Inter"
 
 
 @dataclass
@@ -102,7 +109,7 @@ class MapLink(QGraphicsPathItem):
             end,
         )
         self.setPath(path)
-        self.setPen(QPen(QColor("#64748B"), 2.0, Qt.PenStyle.SolidLine))
+        self.setPen(QPen(QColor("#81756A"), 2.0, Qt.PenStyle.SolidLine))
 
     def shape(self) -> QPainterPath:  # type: ignore[override]
         """Give the narrow painted line a comfortable target for mouse input."""
@@ -111,7 +118,7 @@ class MapLink(QGraphicsPathItem):
         return stroker.createStroke(self.path())
 
     def paint(self, painter: QPainter, option, widget=None) -> None:  # type: ignore[override]
-        pen = QPen(QColor("#2563EB") if self.isSelected() else QColor("#64748B"), 3.0 if self.isSelected() else 2.0)
+        pen = QPen(QColor("#356BCE") if self.isSelected() else QColor("#81756A"), 3.0 if self.isSelected() else 2.0)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self.path())
@@ -122,8 +129,8 @@ class MapLink(QGraphicsPathItem):
             painter.setFont(font)
             text_rect = QRectF(painter.fontMetrics().boundingRect(self.label)).adjusted(-8, -4, 8, 4)
             text_rect.moveCenter(center)
-            painter.fillRect(text_rect, QColor("#F8FAFC"))
-            painter.setPen(QColor("#334155"))
+            painter.fillRect(text_rect, QColor("#FFFCF7"))
+            painter.setPen(QColor("#4F453C"))
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, self.label)
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
@@ -159,6 +166,11 @@ class MapNode(QGraphicsObject):
         self._contains_children = False
         self._thumbnail_path = ""
         self._thumbnail = QPixmap()
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(16)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(74, 60, 46, 40))
+        self.setGraphicsEffect(shadow)
         self.setPos(data.x, data.y)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -249,19 +261,20 @@ class MapNode(QGraphicsObject):
         rect = self.boundingRect()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         fill = QColor(self.data.colour)
-        border = QColor("#2563EB") if self.isSelected() else QColor("#CBD5E1")
-        painter.setPen(QPen(border, 3.0 if self.isSelected() else 1.4))
+        fill.setAlpha(238)
+        border = QColor("#356BCE") if self.isSelected() else QColor("#B9AB9A")
+        painter.setPen(QPen(border, 3.0 if self.isSelected() else 1.25))
         painter.setBrush(fill)
-        painter.drawRoundedRect(rect, 14, 14)
+        painter.drawRoundedRect(rect, 18, 18)
 
-        painter.setPen(QColor("#0F172A"))
-        font = QFont("Segoe UI", 10)
+        painter.setPen(QColor("#2F2B27"))
+        font = QFont(APP_FONT, 10)
         font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(font)
         if self._contains_children or self.has_details():
             title_rect = QRectF(rect.left() + 14, rect.top() + 6, rect.width() - 28, self.HEADER_HEIGHT - 10)
             painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.data.label)
-            painter.setPen(QPen(QColor("#CBD5E1"), 1.0))
+            painter.setPen(QPen(QColor("#CFC2B3"), 1.0))
             painter.drawLine(rect.left() + 12, self.HEADER_HEIGHT, rect.right() - 12, self.HEADER_HEIGHT)
         else:
             painter.drawText(rect.adjusted(14, 12, -14, -12), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.data.label)
@@ -275,16 +288,16 @@ class MapNode(QGraphicsObject):
             else:
                 painter.drawPixmap(image_rect.toRect(), preview)
         if url_rect:
-            url_font = QFont("Segoe UI", 8)
+            url_font = QFont(APP_FONT, 8)
             url_font.setUnderline(True)
             painter.setFont(url_font)
-            painter.setPen(QColor("#1D4ED8"))
+            painter.setPen(QColor("#315DAA"))
             painter.drawText(url_rect, Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine, self.data.url)
         if text_rect:
-            text_font = QFont("Segoe UI", 8)
+            text_font = QFont(APP_FONT, 8)
             text_font.setUnderline(True)
             painter.setFont(text_font)
-            painter.setPen(QColor("#334155"))
+            painter.setPen(QColor("#4F453C"))
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, self.data.text)
 
     def itemChange(self, change, value):  # type: ignore[override]
@@ -690,7 +703,9 @@ class MapCanvas(QGraphicsView):
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
-        self.setBackgroundBrush(QColor("#F8FAFC"))
+        texture = QPixmap(str(PAPER_TEXTURE))
+        self.setBackgroundBrush(QBrush(texture) if not texture.isNull() else QBrush(QColor("#F7F2E9")))
+        self.setFrameShape(QFrame.Shape.NoFrame)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
@@ -890,6 +905,7 @@ class MainWindow(QMainWindow):
         self.make_toolbar()
         self.statusBar().showMessage("Listo. Crea ideas y conéctalas.")
         self.new_map(seed=True)
+        QTimer.singleShot(0, self.zoom_fit)
 
     def make_workspace(self) -> QWidget:
         splitter = QSplitter()
@@ -930,6 +946,30 @@ class MainWindow(QMainWindow):
         self.center_action = QAction("Centrar nodos", self, shortcut="C", triggered=self.center_nodes)
         self.zoom_fit_action = QAction("Ajustar vista", self, shortcut="F", triggered=self.zoom_fit)
 
+        def icon(action: QAction, glyph: QStyle.StandardPixmap) -> None:
+            action.setIcon(self.style().standardIcon(glyph))
+
+        icon(self.new_action, QStyle.StandardPixmap.SP_FileIcon)
+        icon(self.open_action, QStyle.StandardPixmap.SP_DirOpenIcon)
+        icon(self.save_action, QStyle.StandardPixmap.SP_DialogSaveButton)
+        icon(self.export_action, QStyle.StandardPixmap.SP_FileIcon)
+        icon(self.export_xml_action, QStyle.StandardPixmap.SP_FileIcon)
+        icon(self.add_node_action, QStyle.StandardPixmap.SP_FileDialogNewFolder)
+        icon(self.select_action, QStyle.StandardPixmap.SP_ArrowForward)
+        icon(self.pan_action, QStyle.StandardPixmap.SP_BrowserReload)
+        icon(self.connect_action, QStyle.StandardPixmap.SP_CommandLink)
+        icon(self.delete_action, QStyle.StandardPixmap.SP_TrashIcon)
+        icon(self.indent_action, QStyle.StandardPixmap.SP_ArrowRight)
+        icon(self.outdent_action, QStyle.StandardPixmap.SP_ArrowLeft)
+        icon(self.label_link_action, QStyle.StandardPixmap.SP_MessageBoxInformation)
+        icon(self.edit_text_action, QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        icon(self.layout_action, QStyle.StandardPixmap.SP_DesktopIcon)
+        icon(self.zoom_in_action, QStyle.StandardPixmap.SP_ArrowUp)
+        icon(self.zoom_out_action, QStyle.StandardPixmap.SP_ArrowDown)
+        icon(self.zoom_reset_action, QStyle.StandardPixmap.SP_BrowserStop)
+        icon(self.center_action, QStyle.StandardPixmap.SP_DialogApplyButton)
+        icon(self.zoom_fit_action, QStyle.StandardPixmap.SP_TitleBarMaxButton)
+
         self.tool_group = QActionGroup(self)
         self.tool_group.setExclusive(True)
         for action in (self.select_action, self.pan_action, self.connect_action):
@@ -938,6 +978,8 @@ class MainWindow(QMainWindow):
         self.pan_action.triggered.connect(self.activate_hand)
         self.connect_action.triggered.connect(self.toggle_connect)
         self.select_action.setChecked(True)
+        for action in self.findChildren(QAction):
+            action.setToolTip(action.text())
 
         menu = self.menuBar()
         file_menu = menu.addMenu("Archivo")
@@ -966,7 +1008,12 @@ class MainWindow(QMainWindow):
     def make_toolbar(self) -> None:
         toolbar = QToolBar("Mapa")
         toolbar.setMovable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.setIconSize(QSize(22, 22))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        brand = QLabel("VUE Modern")
+        brand.setObjectName("brandLabel")
+        toolbar.addWidget(brand)
+        toolbar.addSeparator()
         toolbar.addActions([self.new_action, self.open_action, self.save_action])
         toolbar.addSeparator()
         toolbar.addActions([self.select_action, self.pan_action, self.connect_action])
@@ -1260,34 +1307,59 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("VUE Modern")
+    font_id = QFontDatabase.addApplicationFont(str(ASSETS_DIR / "Inter-Variable.ttf"))
+    if font_id >= 0:
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        if families:
+            app.setFont(QFont(families[0], 10))
     app.setStyle("Fusion")
     app.setStyleSheet(
         """
-        QMainWindow { background: #F8FAFC; }
-        QToolBar { background: #FFFFFF; border: 0; border-bottom: 1px solid #E2E8F0; padding: 7px; spacing: 4px; }
-        QToolButton { border: 1px solid transparent; border-radius: 7px; padding: 7px 10px; color: #1E293B; }
-        QToolButton:hover, QToolButton:checked { background: #E8F0FE; border-color: #BFDBFE; color: #1D4ED8; }
-        QLabel#zoomLabel { color: #475569; font-weight: 600; padding: 0 6px; }
-        QMenuBar { background: #FFFFFF; color: #1E293B; border-bottom: 1px solid #E2E8F0; }
-        QMenuBar::item { padding: 7px 10px; background: transparent; }
-        QMenuBar::item:selected { background: #E8F0FE; color: #1D4ED8; }
-        QMenu { background: #FFFFFF; color: #1E293B; border: 1px solid #CBD5E1; padding: 5px; }
-        QMenu::item { padding: 7px 28px 7px 12px; border-radius: 5px; }
-        QMenu::item:selected { background: #E8F0FE; color: #1D4ED8; }
-        #inspectorPanel { background: #FFFFFF; border-left: 1px solid #E2E8F0; }
-        #inspectorPanel QLabel { color: #334155; background: transparent; }
-        #panelTitle { font-size: 18px; font-weight: 600; color: #0F172A; }
-        QLineEdit, QPlainTextEdit { border: 1px solid #CBD5E1; border-radius: 6px; padding: 7px; background: #FFFFFF; color: #0F172A; }
-        QLineEdit:focus, QPlainTextEdit:focus { border: 2px solid #60A5FA; }
-        QPushButton { border: 1px solid #CBD5E1; border-radius: 6px; padding: 8px 10px; background: #FFFFFF; color: #1E293B; }
-        QPushButton:hover { background: #F1F5F9; }
-        #primaryButton { background: #2563EB; color: white; border-color: #2563EB; }
-        #primaryButton:hover { background: #1D4ED8; }
-        QDialog, QMessageBox { background: #FFFFFF; color: #0F172A; }
-        QDialog QLabel, QMessageBox QLabel { background: transparent; color: #0F172A; }
-        QDialog QPushButton, QMessageBox QPushButton { background: #FFFFFF; color: #1E293B; border: 1px solid #94A3B8; min-width: 76px; }
-        QDialog QPushButton:hover, QMessageBox QPushButton:hover { background: #F1F5F9; }
-        QStatusBar { background: #FFFFFF; border-top: 1px solid #E2E8F0; color: #475569; }
+        QMainWindow { background: #EDE7DD; }
+        QMenuBar {
+            background: rgba(255, 253, 248, 238); color: #322D27;
+            border-bottom: 1px solid #D8CEC0; padding: 5px 14px; font: 10pt "Inter";
+        }
+        QMenuBar::item { padding: 8px 12px; margin: 0 2px; border-radius: 8px; background: transparent; }
+        QMenuBar::item:selected { background: #EAE3D7; color: #245BBB; }
+        QToolBar {
+            background: rgba(255, 253, 248, 230); border: 1px solid #DED4C6;
+            border-radius: 14px; margin: 7px 12px 9px 12px; padding: 6px 10px; spacing: 5px;
+        }
+        QToolButton {
+            min-width: 34px; min-height: 34px; border: 1px solid transparent; border-radius: 10px;
+            padding: 5px; color: #3E352D; font: 8.5pt "Inter";
+        }
+        QToolButton:hover { background: rgba(235, 226, 213, 220); border-color: #D2C5B4; color: #245BBB; }
+        QToolButton:checked { background: #E4EDF9; border-color: #9BBCEB; color: #245BBB; }
+        QLabel#brandLabel { color: #2F2B27; font: 700 16px "Inter"; padding: 0 12px 0 5px; }
+        QLabel#zoomLabel { color: #675B4E; font-weight: 600; padding: 0 8px; }
+        QMenu { background: #FFFCF7; color: #3E352D; border: 1px solid #D8CEC0; border-radius: 10px; padding: 6px; }
+        QMenu::item { padding: 8px 30px 8px 30px; border-radius: 7px; }
+        QMenu::item:selected { background: #EEE7DC; color: #245BBB; }
+        QMenu::separator { height: 1px; background: #E4DCD1; margin: 5px 10px; }
+        QSplitter::handle { background: transparent; width: 7px; }
+        QSplitter::handle:hover { background: #DAD0C2; }
+        #inspectorPanel {
+            background: rgba(255, 253, 248, 238); border: 1px solid #DED4C6;
+            border-radius: 16px; margin: 0 12px 12px 0;
+        }
+        #inspectorPanel QLabel { color: #4F453C; background: transparent; }
+        #panelTitle { font: 600 20px "Inter"; color: #2F2B27; padding-bottom: 4px; }
+        QLineEdit, QPlainTextEdit {
+            border: 1px solid #D6CCBE; border-radius: 9px; padding: 8px; background: rgba(255, 255, 255, 210);
+            color: #2F2B27; selection-background-color: #B9D0F3;
+        }
+        QLineEdit:focus, QPlainTextEdit:focus { border: 2px solid #6F9ADD; background: #FFFFFF; }
+        QPushButton { border: 1px solid #D2C6B6; border-radius: 9px; padding: 8px 11px; background: rgba(255, 255, 255, 200); color: #3E352D; }
+        QPushButton:hover { background: #EEE7DC; border-color: #BDAF9E; }
+        #primaryButton { background: #285EBC; color: white; border-color: #285EBC; font-weight: 600; }
+        #primaryButton:hover { background: #1D4D9D; }
+        QDialog, QMessageBox { background: #FFFCF7; color: #2F2B27; }
+        QDialog QLabel, QMessageBox QLabel { background: transparent; color: #2F2B27; }
+        QDialog QPushButton, QMessageBox QPushButton { background: #FFFFFF; color: #3E352D; border: 1px solid #C8BAA9; min-width: 76px; }
+        QDialog QPushButton:hover, QMessageBox QPushButton:hover { background: #EEE7DC; }
+        QStatusBar { background: rgba(255, 253, 248, 235); border-top: 1px solid #DED4C6; color: #675B4E; padding-left: 12px; }
         """
     )
     window = MainWindow()

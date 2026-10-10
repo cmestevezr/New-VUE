@@ -2,6 +2,8 @@
 
 A modern, local concept-map editor built with Python and Qt. It is a clean implementation inspired by the purpose of [Visual Understanding Environment (VUE)](https://github.com/VUE/VUE), without its legacy Java interface or a Windows installer.
 
+The **Studio Paper** interface includes a bundled warm paper canvas, translucent surfaces, consistent native icons, high-contrast input states and the open-source Inter typeface. The included font is licensed under the SIL Open Font License; see [`assets/OFL-Inter.txt`](assets/OFL-Inter.txt).
+
 ## Features
 
 - Select and move concepts with **Pointer** (`V`).
