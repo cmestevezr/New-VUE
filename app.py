@@ -10,7 +10,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QFont,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPainterPathStroker,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -72,6 +83,7 @@ class MapLink(QGraphicsPathItem):
         self.label = label
         self.setZValue(-1)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setToolTip("Doble clic para escribir una etiqueta")
         self.refresh_path()
 
     def refresh_path(self) -> None:
@@ -86,6 +98,12 @@ class MapLink(QGraphicsPathItem):
         )
         self.setPath(path)
         self.setPen(QPen(QColor("#64748B"), 2.0, Qt.PenStyle.SolidLine))
+
+    def shape(self) -> QPainterPath:  # type: ignore[override]
+        """Give the narrow painted line a comfortable target for mouse input."""
+        stroker = QPainterPathStroker()
+        stroker.setWidth(18.0)
+        return stroker.createStroke(self.path())
 
     def paint(self, painter: QPainter, option, widget=None) -> None:  # type: ignore[override]
         pen = QPen(QColor("#2563EB") if self.isSelected() else QColor("#64748B"), 3.0 if self.isSelected() else 2.0)
@@ -110,7 +128,7 @@ class MapLink(QGraphicsPathItem):
             self.update()
             if isinstance(self.scene(), MapScene):
                 self.scene().changed.emit()
-        super().mouseDoubleClickEvent(event)
+        event.accept()
 
 
 class MapNode(QGraphicsObject):
@@ -124,6 +142,7 @@ class MapNode(QGraphicsObject):
         super().__init__()
         self.data = data
         self.links: list[MapLink] = []
+        self._drag_origin: QPointF | None = None
         self.setPos(data.x, data.y)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -168,6 +187,31 @@ class MapNode(QGraphicsObject):
             self.changed.emit()
         super().mouseDoubleClickEvent(event)
 
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_origin = QPointF(self.pos())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        super().mouseReleaseEvent(event)
+        origin, self._drag_origin = self._drag_origin, None
+        if origin is None or (self.pos() - origin).manhattanLength() < 8:
+            return
+        scene = self.scene()
+        if not isinstance(scene, MapScene):
+            return
+        center = self.sceneBoundingRect().center()
+        parent = next(
+            (
+                item
+                for item in scene.items(center)
+                if isinstance(item, MapNode) and item is not self and item.sceneBoundingRect().contains(center)
+            ),
+            None,
+        )
+        if parent and scene.indent_node(self, parent):
+            self.setSelected(True)
+
 
 class MapScene(QGraphicsScene):
     changed = Signal()
@@ -192,6 +236,31 @@ class MapScene(QGraphicsScene):
         self.addItem(link)
         self.changed.emit()
         return link
+
+    def indent_node(self, node: MapNode, parent: MapNode) -> bool:
+        """Make ``node`` a child of ``parent`` and ensure its hierarchy link exists."""
+        if node is parent or self._would_create_cycle(node, parent):
+            return False
+        siblings = [
+            item
+            for item in self.items()
+            if isinstance(item, MapNode) and item is not node and item.data.parent_id == parent.data.id
+        ]
+        node.data.parent_id = parent.data.id
+        node.setPos(parent.pos() + QPointF(250, len(siblings) * 115))
+        if not any(link.source is parent and link.target is node for link in parent.links):
+            self.add_link(parent, node)
+        self.changed.emit()
+        return True
+
+    def _would_create_cycle(self, node: MapNode, parent: MapNode) -> bool:
+        lookup = {item.data.id: item for item in self.items() if isinstance(item, MapNode)}
+        ancestor: MapNode | None = parent
+        while ancestor:
+            if ancestor is node:
+                return True
+            ancestor = lookup.get(ancestor.data.parent_id or "")
+        return False
 
     def remove_node(self, node: MapNode) -> None:
         for link in list(node.links):
@@ -632,20 +701,9 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         parent = choices[choice]
-        lookup = {candidate.data.id: candidate for candidate in candidates + [node]}
-        ancestor = parent
-        while ancestor.data.parent_id:
-            if ancestor.data.parent_id == node.data.id:
-                QMessageBox.warning(self, "Indentar", "No puedes crear una jerarquía circular.")
-                return
-            ancestor = lookup.get(ancestor.data.parent_id)
-            if ancestor is None:
-                break
-        node.data.parent_id = parent.data.id
-        siblings = [item for item in self.scene.items() if isinstance(item, MapNode) and item.data.parent_id == parent.data.id and item is not node]
-        node.setPos(parent.pos() + QPointF(250, max(0, len(siblings)) * 115))
-        if not any(link.source is parent and link.target is node for link in parent.links):
-            self.scene.add_link(parent, node)
+        if not self.scene.indent_node(node, parent):
+            QMessageBox.warning(self, "Indentar", "No puedes crear una jerarquía circular.")
+            return
         self.mark_dirty()
         self.statusBar().showMessage(f"{node.data.label} quedó indentado bajo {parent.data.label}.", 3500)
 
