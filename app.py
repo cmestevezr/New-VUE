@@ -679,6 +679,9 @@ class MapScene(QGraphicsScene):
 class MapCanvas(QGraphicsView):
     node_selected = Signal(object)
     link_ready = Signal(object, object)
+    zoom_changed = Signal(int)
+    MIN_ZOOM = 0.2
+    MAX_ZOOM = 3.0
 
     def __init__(self, scene: MapScene, parent=None) -> None:
         super().__init__(scene, parent)
@@ -707,7 +710,22 @@ class MapCanvas(QGraphicsView):
 
     def wheelEvent(self, event) -> None:  # type: ignore[override]
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale(factor, factor)
+        self.zoom_by(factor)
+
+    def zoom_by(self, factor: float) -> None:
+        current = self.transform().m11()
+        target = min(self.MAX_ZOOM, max(self.MIN_ZOOM, current * factor))
+        if abs(target - current) < 0.0001:
+            return
+        self.scale(target / current, target / current)
+        self.zoom_changed.emit(round(target * 100))
+
+    def reset_zoom(self) -> None:
+        self.resetTransform()
+        self.zoom_changed.emit(100)
+
+    def report_zoom(self) -> None:
+        self.zoom_changed.emit(round(self.transform().m11() * 100))
 
 
 class Inspector(QWidget):
@@ -865,6 +883,7 @@ class MainWindow(QMainWindow):
         self.scene.selectionChanged.connect(self.selection_changed)
         self.scene.changed.connect(self.mark_dirty)
         self.canvas.link_ready.connect(self.create_link)
+        self.canvas.zoom_changed.connect(self.update_zoom_label)
         self.inspector.changed.connect(self.mark_dirty)
         self.setCentralWidget(self.make_workspace())
         self.make_actions()
@@ -905,6 +924,10 @@ class MainWindow(QMainWindow):
         self.label_link_action = QAction("Etiquetar enlace…", self, shortcut="E", triggered=self.label_selected_link)
         self.edit_text_action = QAction("Editar texto del concepto…", self, triggered=self.edit_selected_node_text)
         self.layout_action = QAction("Ordenar", self, triggered=self.auto_layout)
+        self.zoom_in_action = QAction("Acercar", self, shortcut="Ctrl++", triggered=lambda: self.canvas.zoom_by(1.2))
+        self.zoom_out_action = QAction("Alejar", self, shortcut="Ctrl+-", triggered=lambda: self.canvas.zoom_by(1 / 1.2))
+        self.zoom_reset_action = QAction("100 %", self, shortcut="Ctrl+0", triggered=self.canvas.reset_zoom)
+        self.center_action = QAction("Centrar nodos", self, shortcut="C", triggered=self.center_nodes)
         self.zoom_fit_action = QAction("Ajustar vista", self, shortcut="F", triggered=self.zoom_fit)
 
         self.tool_group = QActionGroup(self)
@@ -936,7 +959,9 @@ class MainWindow(QMainWindow):
         tools_menu = menu.addMenu("Herramientas")
         tools_menu.addActions([self.select_action, self.pan_action, self.connect_action])
         view_menu = menu.addMenu("Vista")
-        view_menu.addAction(self.zoom_fit_action)
+        view_menu.addActions([self.zoom_in_action, self.zoom_out_action, self.zoom_reset_action])
+        view_menu.addSeparator()
+        view_menu.addActions([self.center_action, self.zoom_fit_action])
 
     def make_toolbar(self) -> None:
         toolbar = QToolBar("Mapa")
@@ -948,7 +973,14 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addActions([self.add_node_action, self.indent_action, self.outdent_action, self.label_link_action, self.edit_text_action, self.delete_action])
         toolbar.addSeparator()
-        toolbar.addActions([self.layout_action, self.zoom_fit_action, self.export_action, self.export_xml_action])
+        toolbar.addActions([self.layout_action, self.zoom_out_action, self.zoom_in_action, self.zoom_reset_action, self.center_action, self.zoom_fit_action])
+        self.zoom_label = QLabel("100 %")
+        self.zoom_label.setObjectName("zoomLabel")
+        self.zoom_label.setMinimumWidth(52)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toolbar.addWidget(self.zoom_label)
+        toolbar.addSeparator()
+        toolbar.addActions([self.export_action, self.export_xml_action])
         self.addToolBar(toolbar)
 
     def new_map(self, checked=False, seed: bool = False) -> None:
@@ -1201,10 +1233,21 @@ class MainWindow(QMainWindow):
         except OSError as error:
             QMessageBox.critical(self, "No se pudo exportar XML", str(error))
 
+    def update_zoom_label(self, percent: int) -> None:
+        self.zoom_label.setText(f"{percent} %")
+
+    def center_nodes(self) -> None:
+        bounds = self.scene.itemsBoundingRect()
+        if bounds.isEmpty():
+            return
+        self.canvas.centerOn(bounds.center())
+        self.statusBar().showMessage("Vista centrada en los nodos.", 2500)
+
     def zoom_fit(self) -> None:
         bounds = self.scene.itemsBoundingRect()
         if not bounds.isEmpty():
             self.canvas.fitInView(bounds.adjusted(-90, -90, 90, 90), Qt.AspectRatioMode.KeepAspectRatio)
+            self.canvas.report_zoom()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.confirm_unsaved():
@@ -1224,6 +1267,7 @@ def main() -> int:
         QToolBar { background: #FFFFFF; border: 0; border-bottom: 1px solid #E2E8F0; padding: 7px; spacing: 4px; }
         QToolButton { border: 1px solid transparent; border-radius: 7px; padding: 7px 10px; color: #1E293B; }
         QToolButton:hover, QToolButton:checked { background: #E8F0FE; border-color: #BFDBFE; color: #1D4ED8; }
+        QLabel#zoomLabel { color: #475569; font-weight: 600; padding: 0 6px; }
         QMenuBar { background: #FFFFFF; color: #1E293B; border-bottom: 1px solid #E2E8F0; }
         QMenuBar::item { padding: 7px 10px; background: transparent; }
         QMenuBar::item:selected { background: #E8F0FE; color: #1D4ED8; }

@@ -6,6 +6,7 @@ A modern, local concept-map editor built with Python and Qt. It is a clean imple
 
 - Select and move concepts with **Pointer** (`V`).
 - Pan the canvas with **Hand** (`H`) and zoom with the mouse wheel.
+- Use visible **Zoom in**, **Zoom out**, **100 %**, **Centre nodes** and **Fit view** controls; the zoom percentage stays visible in the toolbar.
 - Create curved connections with **Connect** (`L`).
 - Label a selected connection with **Label link** (`E`) or double-click its line to write the label.
 - Drag a concept into another to make it visual content of the receiving concept; the container expands as children are added. **Indent** (`Tab`) and `Shift+Tab` also indent and outdent the selection.
